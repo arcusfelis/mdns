@@ -1,0 +1,14 @@
+{application, mdns,
+    [
+    {description, "Zeroconf and Multicast DNS implementation in Erlang"},
+    {vsn, "0.1"},
+    {applications, [
+        kernel,
+        stdlib,
+        syntax_tools, compiler, lager,
+        crypto, public_key, ssl
+      ]},
+    {mod, {mdns_app, []}},
+    {env, []}
+    ]
+}.
