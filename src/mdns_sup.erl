@@ -17,7 +17,7 @@
 %% @end
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
 start_link() ->
-    ListenPort = get_required_app_env(listen_port),
+    ListenPort = get_app_env(listen_port, 5353),
     IFace      = get_app_env(interface),
     ListenIP   = get_app_env(listen_ip, all),
     start_link(ListenIP, ListenPort, IFace).
@@ -35,7 +35,11 @@ init([ListenIP, ListenPort, IFace]) ->
            {mdns_net, start_link, [ListenIP, ListenPort, IFace]},
             permanent, 5000, worker, [mdns_net]},
 
-    {ok, {{one_for_all, 3, 60}, [Net]}}.
+    Event = {mdns_event,
+           {mdns_event, start_link, []},
+            permanent, 5000, worker, [mdns_event]},
+
+    {ok, {{one_for_all, 3, 60}, [Event, Net]}}.
 
 
 %% ====================================================================
