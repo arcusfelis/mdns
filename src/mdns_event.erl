@@ -7,10 +7,13 @@
 	notify_service_up/4,
     notify_service_down/4,
     notify_sub_service_up/4,
-    notify_sub_service_down/4]).
+    notify_sub_service_down/4,
+    notify_service_request/2]).
 
 start_link() ->
-    gen_event:start_link({local, mgr_name()}).
+    {ok, Pid} = gen_event:start_link({local, mgr_name()}),
+    add_handler(mdns_console_h),
+    {ok, Pid}.
 
 mgr_name() ->
     mdns_node_discovery_mgr_name.
@@ -32,6 +35,10 @@ notify_sub_service_up(Name, ServiceType, IP, SubType) ->
 
 notify_sub_service_down(Name, ServiceType, IP, SubType) ->
     notify(mgr_name(), {sub_service_up, Name, ServiceType, IP, SubType}).
+
+
+notify_service_request(ServiceType, IP) ->
+    notify(mgr_name(), {service_request, ServiceType, IP}).
 
 notify(Manager, Message) ->
     gen_event:notify(Manager, Message).
