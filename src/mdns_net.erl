@@ -202,7 +202,7 @@ handle_info({waiting_timeout, IP},
 terminate(_, _State) ->
     ok.
 
-code_change(_, _, State) ->
+code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 %% ==================================================================
