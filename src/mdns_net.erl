@@ -26,7 +26,7 @@
 
 
 % Public interface
--export([start_link/3,
+-export([start_link/4,
          publish_service/3,
          publish_service/4,
          unpublish_service/3,
@@ -45,7 +45,10 @@
     host_name :: string(),
     domain :: string(),
     broadcast_ip,
-    broadcast_port
+    broadcast_port,
+    %% This dict is used to merge a series of packets from one sender.
+    %% Contains pairs of `{IP, {TRef, Rec=#dns_rec{}}}'.
+    waiting_dict :: dict()
 }).
 
 %
@@ -59,29 +62,37 @@
 srv_name() ->
    mdns_socket_server.
 
+waiting_timeout() ->
+    300.
+
 socket_options(ListenIP, IFace) ->
     If = case IFace of
-             undefined -> multicast_if();
+             undefined -> undefined;
+             auto -> multicast_if();
              _ -> IFace
          end,
     lager:info("Multicast interface is ~p.", [If]),
+    lager:info("Listen on ~p.", [ListenIP]),
+    [{multicast_if, If} || If =/= undefined] ++
     [{reuseaddr, true},
-     {multicast_if, If},
-     {broadcast, true},
-     {active, true}, {mode, binary}]
-    ++ case ListenIP of all -> []; ListenIP -> [{ip, ListenIP}] end.
+     {multicast_ttl,4},
+%    {multicast_loop,false},
+%    {broadcast, true},
+     {active, true},
+     {mode, binary},
+     {ip, ListenIP}].
 
 %
 % Public interface
 %
-start_link(ListenIP, ListenPort, ExternalIP) ->
-    Args = [ListenIP, ListenPort, ExternalIP],
+start_link(ListenIP, ListenPort, ExternalIP, Domain) ->
+    Args = [ListenIP, ListenPort, ExternalIP, Domain],
     gen_server:start_link({local, srv_name()}, ?MODULE, Args, []).
 
 
 %% @doc Publish a service.
 %% `avahi-publish-service 4d336d342d312d2d343834616435313564343437 _bittorrent._tcp 555'
-%e will be `publish_service("4d336d342d312d2d343834616435313564343437", "_bittorrent._tcp", 555)'.
+%e will be `mdns_net:publish_service("4d336d342d312d2d343834616435313564343437", "_bittorrent._tcp", 555)'.
 publish_service(Name, ServiceType, Port) ->
     publish_service(Name, ServiceType, Port, []).
 
@@ -98,16 +109,18 @@ unpublish_service(Name, ServiceType, Port, SubServices) ->
 
 %% ==================================================================
 
-init([ListenIP, ListenPort, IFace]) ->
+init([ListenIP, ListenPort, IFace, Domain]) ->
     {ok, Socket} = gen_udp:open(ListenPort,
                                 socket_options(ListenIP, IFace)),
+    inet:setopts(Socket, [{add_membership,{ListenIP,{0,0,0,0}}}]),
     %% TODO: We want "omicron.local", this call returns "omicron.lan".
     HostName = net_adm:localhost(),
     State = #state{socket=Socket,
-                   domain="local",
+                   domain=Domain,
                    host_name=HostName,
                    broadcast_ip=ListenIP,
-                   broadcast_port=ListenPort},
+                   broadcast_port=ListenPort,
+                   waiting_dict=dict:new()},
     {ok, State}.
 
 handle_call({publish_service, Name, ServiceType, Port, SubServices}, _From,
@@ -155,22 +168,36 @@ handle_cast(not_implemented, State) ->
 
 
 handle_info({udp, _Socket, IP, Port, Packet},
-            #state{domain=Domain} = State) ->
+            #state{domain=Domain, waiting_dict=WaitingDict} = State) ->
     lager:debug("Receiving a packet from ~p:~p of size ~B~n",
                 [IP, Port, byte_size(Packet)]),
     case inet_dns:decode(Packet) of
         {ok, Rec} ->
             lager:debug("Decoded ~s~n", [pretty(Rec)]),
-            inspect_respond_packet(Rec, IP, Domain),
-            inspect_request_packet(Rec, IP, Domain),
-            {noreply, State};
+            TRef = erlang:send_after(
+                waiting_timeout(), self(), {waiting_timeout, IP}),
+            WaitingDict1 = dict:update(
+                IP, %% key
+                fun({OldTRef, OldRec}) -> %% called, if the key exists.
+                    erlang:cancel_timer(OldTRef),
+                    {TRef, merge_records(OldRec, Rec)}
+                end,
+                {TRef, Rec}, %% initial.
+                WaitingDict),
+            {noreply, State#state{waiting_dict=WaitingDict1}};
         {error, Reason} ->
             lager:debug("Decoding failed with reason ~p", [Reason]),
             {noreply, State}
     end;
 
-handle_info(_Msg, State) ->
-    {noreply, State}.
+handle_info({waiting_timeout, IP},
+            #state{waiting_dict=WaitingDict, domain=Domain} = State) ->
+    {_TRef, Rec} = dict:fetch(IP, WaitingDict),
+    WaitingDict1 = dict:erase(IP, WaitingDict),
+    Rec1 = normalize_record(Rec),
+    inspect_respond_packet(Rec1, IP, Domain),
+    inspect_request_packet(Rec1, IP, Domain),
+    {noreply, State#state{waiting_dict=WaitingDict1}}.
 
 terminate(_, _State) ->
     ok.
@@ -218,6 +245,8 @@ multicast_if() ->
     {ok, Interfaces} = inet:getifaddrs(),
     multicast_if(Interfaces).
 
+multicast_if([]) ->
+    undefined;
 multicast_if([{_, H} | T]) ->
     case is_running_multicast_interface(proplists:get_value(flags, H)) andalso proplists:is_defined(addr, H) of
         true ->
@@ -260,16 +289,35 @@ query_packet_header() ->
 %% data = {0,0,555,"omicron.local"},
 %% tm = undefined,bm = [],func = false}
 service_srv_dns_rr(SrvDomain, HostName, Port, IsEnable) ->
+    %% Hack.
+    %% a 2-byte class field (hex 80 01 for Ethernet).
+    %% A inet_dns does not allow to encode data as `{Prio,Weight,Port,Target}'.
+    %%
+    %% For class = srv, inet_dns calls
+    %% `encode_name(Bin, Comp, Pos, Name)'.
+    %% where
+    %% Bin = target binary
+    %% Comp = compression lookup table; label list -> buffer position
+    %% Pos = position in DNS message
+    %% Name = domain name to encode
+    %% as
+    %% `encode_name(<<Prio:16,Weight:16,Port:16>>, Comp, Pos+2+2+2, Target)'.
+    %%
+    %% For class = 32769, it calls `{iolist_to_binary(Data),Comp}'.
     #dns_rr{
         domain = SrvDomain,
         type = srv,
         class = 32769,
         cnt = 0,
         ttl = case IsEnable of true -> 120; false -> 0 end,
-        data = {0,0,Port,HostName},
+        data = encode_data({0,0,Port,HostName}),
         tm = undefined,
         bm = [],
         func = false}.
+
+%% Ignore `HostName'.
+encode_data({Prio,Weight,Port,_HostName}) ->
+    <<Prio:16,Weight:16,Port:16,0>>.
 
 service_srv_in_dns_rr(SrvDomain, HostName, Port, IsEnable) ->
     #dns_rr{
@@ -439,3 +487,34 @@ escape_name([H|Name]) ->
 escape_name("") ->
     "".
     
+
+merge_records(R1=#dns_rec{
+        qdlist=HQ1,
+        anlist=AN1,
+        nslist=NS1,
+        arlist=AR1
+        }, #dns_rec{
+        qdlist=HQ2,
+        anlist=AN2,
+        nslist=NS2,
+        arlist=AR2
+        }) ->
+    R1#dns_rec{
+        qdlist=HQ1 ++ HQ2,
+        anlist=AN2 ++ AN2,
+        nslist=NS2 ++ NS2,
+        arlist=AR2 ++ AR2
+    }.
+
+normalize_record(R=#dns_rec{
+        qdlist=HQ,
+        anlist=AN,
+        nslist=NS,
+        arlist=AR
+        }) ->
+    R#dns_rec{
+        qdlist=lists:usort(HQ),
+        anlist=lists:usort(AN),
+        nslist=lists:usort(NS),
+        arlist=lists:usort(AR)
+    }.

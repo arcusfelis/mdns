@@ -3,7 +3,7 @@
 
 %% API
 -export([start_link/0,
-         start_link/3]).
+         start_link/4]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -19,20 +19,21 @@
 start_link() ->
     ListenPort = get_app_env(listen_port, 5353),
     IFace      = get_app_env(interface),
-    ListenIP   = get_app_env(listen_ip, all),
-    start_link(ListenIP, ListenPort, IFace).
+    ListenIP   = get_app_env(listen_ip, {224,0,0,251}),
+    Domain     = get_app_env(domain, "local"),
+    start_link(ListenIP, ListenPort, IFace, Domain).
 
-start_link(ListenIP, ListenPort, IFace) ->
+start_link(ListenIP, ListenPort, IFace, Domain) ->
     supervisor:start_link({local, ?MODULE}, ?MODULE,
-                          [ListenIP, ListenPort, IFace]).
+                          [ListenIP, ListenPort, IFace, Domain]).
 
 
 %% ====================================================================
 
 %% @private
-init([ListenIP, ListenPort, IFace]) ->
+init([ListenIP, ListenPort, IFace, Domain]) ->
     Net = {mdns_net,
-           {mdns_net, start_link, [ListenIP, ListenPort, IFace]},
+           {mdns_net, start_link, [ListenIP, ListenPort, IFace, Domain]},
             permanent, 5000, worker, [mdns_net]},
 
     Event = {mdns_event,
