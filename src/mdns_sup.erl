@@ -17,23 +17,23 @@
 %% @end
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
 start_link() ->
-    ListenPort = get_app_env(listen_port, 5353),
-    IFace      = get_app_env(interface),
-    ListenIP   = get_app_env(listen_ip, {224,0,0,251}),
-    Domain     = get_app_env(domain, "local"),
-    start_link(ListenIP, ListenPort, IFace, Domain).
+    ListenPort  = get_app_env(listen_port, 5353),
+    MulticastIP = get_app_env(multicast_ip, {224,0,0,251}),
+    InterfaceIP = get_app_env(interface_ip, {0,0,0,0}),
+    Domain      = get_app_env(domain, "local"),
+    start_link(MulticastIP, InterfaceIP, ListenPort, Domain).
 
-start_link(ListenIP, ListenPort, IFace, Domain) ->
+start_link(MulticastIP, InterfaceIP, ListenPort, Domain) ->
     supervisor:start_link({local, ?MODULE}, ?MODULE,
-                          [ListenIP, ListenPort, IFace, Domain]).
+                          [MulticastIP, InterfaceIP, ListenPort, Domain]).
 
 
 %% ====================================================================
 
 %% @private
-init([ListenIP, ListenPort, IFace, Domain]) ->
+init([MulticastIP, InterfaceIP, ListenPort, Domain]) ->
     Net = {mdns_net,
-           {mdns_net, start_link, [ListenIP, ListenPort, IFace, Domain]},
+           {mdns_net, start_link, [MulticastIP, InterfaceIP, ListenPort, Domain]},
             permanent, 5000, worker, [mdns_net]},
 
     Event = {mdns_event,
@@ -51,11 +51,5 @@ get_app_env(Key, Def) ->
     case application:get_env(?APP, Key) of
         {ok, Value} -> Value;
         undefined -> Def
-    end.
-
-get_required_app_env(Key) ->
-    case application:get_env(?APP, Key) of
-        {ok, Value} -> Value;
-        undefined -> erlang:error({undefined_env_var, Key})
     end.
 

@@ -65,28 +65,29 @@ srv_name() ->
 waiting_timeout() ->
     300.
 
-socket_options(ListenIP, IFace) ->
-    If = case IFace of
-             undefined -> undefined;
+socket_options(MulticastIP, InterfaceIP0) ->
+    InterfaceIP = case InterfaceIP0 of
+             undefined -> {0,0,0,0};
              auto -> multicast_if();
-             _ -> IFace
+             _ -> InterfaceIP0
          end,
-    lager:info("Multicast interface is ~p.", [If]),
-    lager:info("Listen on ~p.", [ListenIP]),
-    [{multicast_if, If} || If =/= undefined] ++
-    [{reuseaddr, true},
+    lager:info("Multicast interface is ~p.", [InterfaceIP]),
+    lager:info("Listen address is ~p.", [MulticastIP]),
+    [{multicast_if, InterfaceIP},
+     {reuseaddr, true},
      {multicast_ttl,4},
 %    {multicast_loop,false},
 %    {broadcast, true},
      {active, true},
      {mode, binary},
-     {ip, ListenIP}].
+     {ip, MulticastIP},
+     {add_membership,{MulticastIP, InterfaceIP}}].
 
 %
 % Public interface
 %
-start_link(ListenIP, ListenPort, ExternalIP, Domain) ->
-    Args = [ListenIP, ListenPort, ExternalIP, Domain],
+start_link(MulticastIP, InterfaceIP, ListenPort, Domain) ->
+    Args = [MulticastIP, InterfaceIP, ListenPort, Domain],
     gen_server:start_link({local, srv_name()}, ?MODULE, Args, []).
 
 
@@ -109,16 +110,15 @@ unpublish_service(Name, ServiceType, Port, SubServices) ->
 
 %% ==================================================================
 
-init([ListenIP, ListenPort, IFace, Domain]) ->
+init([MulticastIP, InterfaceIP, ListenPort, Domain]) ->
     {ok, Socket} = gen_udp:open(ListenPort,
-                                socket_options(ListenIP, IFace)),
-    inet:setopts(Socket, [{add_membership,{ListenIP,{0,0,0,0}}}]),
+                                socket_options(MulticastIP, InterfaceIP)),
     %% TODO: We want "omicron.local", this call returns "omicron.lan".
     HostName = net_adm:localhost(),
     State = #state{socket=Socket,
                    domain=Domain,
                    host_name=HostName,
-                   broadcast_ip=ListenIP,
+                   broadcast_ip=MulticastIP,
                    broadcast_port=ListenPort,
                    waiting_dict=dict:new()},
     {ok, State}.

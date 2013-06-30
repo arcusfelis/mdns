@@ -2,6 +2,8 @@
 -export([
     start_link/0,
     add_handler/1,
+    add_sup_handler/1,
+    add_sup_handler/2,
 	add_handler/2,
 	mgr_name/0,
 	notify_service_up/4,
@@ -17,6 +19,12 @@ start_link() ->
 
 mgr_name() ->
     mdns_node_discovery_mgr_name.
+
+add_sup_handler(Handler) ->
+    add_sup_handler(Handler, []).
+
+add_sup_handler(Handler, Args) ->
+    gen_event:add_sup_handler(mgr_name(), Handler, Args).
 
 add_handler(Handler) ->
     add_handler(Handler, []).
@@ -34,7 +42,7 @@ notify_sub_service_up(Name, ServiceType, IP, SubType) ->
     notify(mgr_name(), {sub_service_up, Name, ServiceType, IP, SubType}).
 
 notify_sub_service_down(Name, ServiceType, IP, SubType) ->
-    notify(mgr_name(), {sub_service_up, Name, ServiceType, IP, SubType}).
+    notify(mgr_name(), {sub_service_down, Name, ServiceType, IP, SubType}).
 
 
 notify_service_request(ServiceType, IP) ->
