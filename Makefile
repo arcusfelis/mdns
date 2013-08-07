@@ -1,9 +1,11 @@
-REBAR = rebar
+PROJECT = mdns
 
-.PHONY: compile
-compile:
-	$(REBAR) compile
+DEPS = gproc lager lists2
+dep_gproc = https://github.com/uwiger/gproc.git master
+dep_lager = https://github.com/basho/lager.git 2.0.0
+dep_lists2 = https://github.com/jlouis/lists2.git master
 
-.PHONY: clean
-clean:
-	$(REBAR) clean
+ERLC_OPTS = +debug_info +'{parse_transform, lager_transform}'
+
+include erlang.mk
+
